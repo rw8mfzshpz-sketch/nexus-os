@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nexus Error Inspector</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --card: #121a2f;
+      --text: #e9eefc;
+      --sub: #9eb0d3;
+      --ok: #10b981;
+      --warn: #f59e0b;
+      --err: #ef4444;
+      --line: #24314f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+    }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    p { color: var(--sub); margin: 0 0 16px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+    }
+    .row {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 8px;
+    }
+    .row:last-child { margin-bottom: 0; }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .err { color: var(--err); }
+    .mono { font-family: Consolas, monospace; font-size: 12px; word-break: break-all; }
+    button {
+      border: 1px solid var(--line);
+      background: #1b2643;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      margin-right: 8px;
+    }
+    .meta { color: var(--sub); font-size: 12px; margin-top: 8px; }
+    .notice {
+      border: 1px solid #5b3a00;
+      background: rgba(245, 158, 11, 0.1);
+      color: #ffd89a;
+      border-radius: 10px;
+      padding: 10px;
+      margin-bottom: 12px;
+    }
+    .controls {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+    input {
+      border: 1px solid var(--line);
+      background: #0f1730;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 10px;
+      min-width: 250px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Nexus Error Inspector</h1>
+  <p>Port erisimi, route yonlendirmesi ve basit gecis izinlerini tek panelde test eder.</p>
+
+  <div id="fileModeNotice" class="notice" style="display:none;"></div>
+
+  <div class="controls">
+    <input id="frontendBase" value="http://localhost:5173" />
+    <button id="runBtn">Analizi Baslat</button>
+    <button id="clearBtn">Temizle</button>
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <h3>Port Kontrolleri</h3>
+      <div id="ports"></div>
+    </section>
+    <section class="card">
+      <h3>Route / Yonlendirme Kontrolleri</h3>
+      <div id="routes"></div>
+    </section>
+    <section class="card">
+      <h3>Gecis Izin Simulasyonu</h3>
+      <div id="auth"></div>
+    </section>
+    <section class="card">
+      <h3>Tarayici Hatalari</h3>
+      <div id="errors"></div>
+      <div class="meta">Not: Bu panel acik oldugu surece yakalanan runtime hatalarini listeler.</div>
+    </section>
+  </div>
+
+  <script>
+    const portsEl = document.getElementById('ports');
+    const routesEl = document.getElementById('routes');
+    const authEl = document.getElementById('auth');
+    const errorsEl = document.getElementById('errors');
+    const frontendBaseInput = document.getElementById('frontendBase');
+    const fileModeNotice = document.getElementById('fileModeNotice');
+
+    if (window.location.protocol === 'file:') {
+      fileModeNotice.style.display = 'block';
+      fileModeNotice.innerHTML = 'Bu dosya file:// modunda acildi. Dogru route testi icin <span class="mono">http://localhost:5173/Error.html</span> gibi bir HTTP adresi kullanin.';
+    }
+
+    const checks = {
+      ports: [
+        { name: 'Frontend Vite', url: 'http://localhost:5173/' },
+        { name: 'PHP API Base', url: 'http://localhost:8001/', skipCors: true },
+        { name: 'PHP API Products', url: 'http://localhost:8001/api/products', skipCors: true },
+        { name: 'Discord Proxy Health', url: 'http://localhost:3002/health' }
+      ],
+      routes: [
+        { path: '/' },
+        { path: '/login' },
+        { path: '/dashboard' },
+        { path: '/admin' }
+      ]
+    };
+
+    function renderRow(target, title, status, detail) {
+      const div = document.createElement('div');
+      div.className = 'row';
+      const cls = status === 'OK' ? 'ok' : status === 'WARN' ? 'warn' : 'err';
+      div.innerHTML = `
+        <div><strong>${title}</strong> - <span class="${cls}">${status}</span></div>
+        <div class="mono">${detail}</div>
+      `;
+      target.appendChild(div);
+    }
+
+    function clearAll() {
+      portsEl.innerHTML = '';
+      routesEl.innerHTML = '';
+      authEl.innerHTML = '';
+    }
+
+    async function testPort(item) {
+      const opts = {
+        method: item.method || 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      };
+      if (item.body) opts.body = JSON.stringify(item.body);
+
+      const start = performance.now();
+      try {
+        const res = await fetch(item.url, opts);
+        const ms = Math.round(performance.now() - start);
+        const status = res.ok ? 'OK' : 'WARN';
+        renderRow(portsEl, item.name, status, `${item.url} | HTTP ${res.status} | ${ms}ms`);
+      } catch (err) {
+        if (item.skipCors) {
+          try {
+            await fetch(item.url, { method: opts.method, mode: 'no-cors', body: opts.body });
+            renderRow(portsEl, item.name, 'WARN', `${item.url} | ulasildi (no-cors), durum kodu okunamiyor`);
+            return;
+          } catch (_) {}
+        }
+        renderRow(portsEl, item.name, 'ERR', `${item.url} | ${err.message}`);
+      }
+    }
+
+    async function testRoutes() {
+      const base = (frontendBaseInput.value || '').replace(/\/$/, '');
+      if (!base.startsWith('http://') && !base.startsWith('https://')) {
+        renderRow(routesEl, 'Route Base', 'ERR', `Gecersiz base URL: ${base}`);
+        return;
+      }
+      for (const route of checks.routes) {
+        const url = `${base}${route.path}`;
+        try {
+          const res = await fetch(url, { method: 'GET', redirect: 'follow' });
+          const status = res.ok ? 'OK' : 'WARN';
+          renderRow(routesEl, `Route ${route.path}`, status, `${url} | HTTP ${res.status}`);
+        } catch (err) {
+          renderRow(routesEl, `Route ${route.path}`, 'ERR', `${url} | ${err.message}`);
+        }
+      }
+    }
+
+    function simulateAuthTransitions() {
+      const token = localStorage.getItem('token');
+      const role = localStorage.getItem('userRole');
+
+      if (!token) {
+        renderRow(authEl, 'Token Kontrolu', 'WARN', 'token yok -> /dashboard girisinde login yonlendirmesi beklenir');
+      } else {
+        renderRow(authEl, 'Token Kontrolu', 'OK', 'token var -> korumali route gecisi denenebilir');
+      }
+
+      if (role === 'admin') {
+        renderRow(authEl, 'Role Kontrolu', 'OK', 'admin rol -> /admin veya dashboard admin paneli erisimi beklenir');
+      } else if (role) {
+        renderRow(authEl, 'Role Kontrolu', 'WARN', `${role} rol -> standart user dashboard beklenir`);
+      } else {
+        renderRow(authEl, 'Role Kontrolu', 'WARN', 'role yok -> varsayilan user davranisi beklenir');
+      }
+    }
+
+    async function runAnalysis() {
+      clearAll();
+      const frontendBase = (frontendBaseInput.value || '').replace(/\/$/, '');
+      checks.ports[0].url = `${frontendBase}/`;
+      for (const item of checks.ports) {
+        await testPort(item);
+      }
+      await testRoutes();
+      simulateAuthTransitions();
+    }
+
+    window.addEventListener('error', (event) => {
+      renderRow(errorsEl, 'window.error', 'ERR', `${event.message} | ${event.filename || 'inline'}`);
+    });
+
+    window.addEventListener('unhandledrejection', (event) => {
+      const msg = event.reason && event.reason.message ? event.reason.message : String(event.reason);
+      renderRow(errorsEl, 'unhandledrejection', 'ERR', msg);
+    });
+
+    document.getElementById('runBtn').addEventListener('click', runAnalysis);
+    document.getElementById('clearBtn').addEventListener('click', clearAll);
+  </script>
+</body>
+</html>
